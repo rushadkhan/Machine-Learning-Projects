@@ -1,0 +1,239 @@
+---
+title: "Credit"
+output: 
+  pdf_document: default
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import data and necessary libraries
+
+```{r warning=FALSE,message=FALSE}
+## import libraries
+library(naniar)
+library(ggplot2)
+library(reshape2)
+library(dbplyr)
+library(naivebayes)
+library(ranger)
+library(ROCR)
+library(tuneRanger)
+library(mlr)
+```
+
+
+```{r}
+## import training data
+train <- read.csv("AT2_credit_train.csv")
+test <- read.csv("AT2_credit_test.csv")
+```
+
+## EDA 
+
+```{r}
+head(train)
+```
+
+```{r}
+# the structure of the dataset
+str(train)
+```
+
+```{r}
+sum(is.na(train))
+```
+
+
+There is no missing values in this dataset. 
+
+```{r}
+train<-subset(train, train$SEX=="1" | train$SEX=="2")
+```
+
+```{r}
+# change character to factors
+train$SEX=as.factor(train$SEX)
+test$SEX=as.factor(test$SEX)
+```
+
+
+```{r}
+train<-train[train$AGE<=120,]
+```
+
+```{r}
+table(train$default)
+prop.table(table(train$default))
+```
+
+
+26.52% of customers will default next month in the training set. 
+
+
+```{r}
+#correlation 
+cor_data <- train[-c(1,3,25)]
+#correlation matrix
+cormat <- round(x = cor(cor_data), digits = 2)
+melted_cormat <- melt(cormat)
+#the x axis is not labelled since the variable name is too long. The variables have the same order from LIMIT_BAL to PAY_AMT6
+ggplot(data = melted_cormat, aes(x=Var1, y=Var2, fill = value)) + ggtitle("Correlation heatmap")+
+  geom_tile()+theme(axis.title.x=element_blank(),axis.title.y=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+```
+
+From this correlation matrix heatmap we know correlation exsits between variables. The distinct rectangles show that payment amount in different months are correlated, and the similar pattern exists in bill amount and repayment status in past months. 
+
+
+
+```{r}
+Defaultgender<-table(train$default,train$SEX)
+barplot(Defaultgender,legend.text = TRUE,main = "default and gender",
+        xlab = "gender",
+        ylab = "Count")
+```
+
+From the available information, there is no clear difference between men and women in the default behaviour. 
+
+```{r}
+Defaulteducation<-table(train$default,train$EDUCATION)
+barplot(Defaulteducation,legend.text = TRUE,main = "default and education",
+        xlab = "education",
+        ylab = "Count")
+```
+
+1=graduate school, 2=university, 3=high school. It seems that the probability of default will decrease with the education level. 
+
+```{r}
+p1 <- ggplot(data=train, aes(x=AGE, group=default, fill=default)) +
+    geom_density(adjust=1.5,alpha=.4)+ theme_classic()
+p1
+```
+
+The age of customers that will not default is more concentrated. 
+
+```{r}
+p2 <- ggplot(data=train, aes(x=LIMIT_BAL, group=default, fill=default)) +
+    geom_density(adjust=1.5,alpha=.4)+ theme_classic()
+p2
+```
+
+Amount of given credit in dollars for customers who will not default is higher. 
+
+
+```{r}
+train$Default =ifelse(train$default== "N",0,1)
+```
+
+## modelling
+```{r}
+# divide the train dataset to a train part(75%) and test part(25%)
+smp_size <- floor(0.75 * nrow(train))
+## set the seed to make partition reproducible
+set.seed(123)
+temp<- sample(seq_len(nrow(train)), size = smp_size)
+
+trainset<- train[temp, ]
+testset <- train[temp, ]
+```
+
+
+
+```{r}
+#linear model
+logistic_model <- glm(Default ~.,data = trainset[, c(2:24,26)], 
+                      family = "binomial")
+```
+
+
+```{r}
+#Naive Bayes
+NB<- naive_bayes(default ~., data = trainset[, 2:25], usekernel = T) 
+```
+
+```{r}
+#random forest
+# ranger is faster than normal random forest method
+rf <-ranger(Default ~., data = trainset[, c(2:24,26)],num.trees = 300,max.depth = 6,classification = TRUE,importance = 'impurity') 
+```
+
+## model performance in the test set
+```{r}
+# linear model 
+predict_reg <- predict(logistic_model, 
+                       testset[, c(2:24,26)], type = "response")
+predict_reg <- ifelse(predict_reg >0.5, 1, 0)
+# Confusion matrix
+linear_confusion = table(testset$Default, predict_reg)
+logistic_accuracy = sum(diag(linear_confusion)) / sum(linear_confusion)
+logistic_accuracy
+```
+
+```{r warning=FALSE}
+# naive bayes  model 
+predict_NB <- predict(NB, 
+                       testset[, c(2:25)], type = "class")
+# Confusion matrix
+NB_confusion = table(predict_NB, testset$Default)
+NB_accuracy = sum(diag(NB_confusion)) / sum(NB_confusion)
+NB_accuracy 
+```
+
+
+```{r}
+#random forest
+predict_rf = predict(rf,testset[, c(2:24,26)])
+rf_confusion=table(predict_rf$predictions,testset$Default)
+rf_accuracy = sum(diag(rf_confusion)) / sum(rf_confusion)
+rf_accuracy 
+```
+
+random forest performs best out of these three models. 
+
+```{r}
+# feature importance 
+imp<-as.vector(rf$variable.importance)
+variables<-(as.vector((names(train[, 2:24]))))
+DF<-cbind(variables,imp)
+DF<-as.data.frame(DF)
+DF$imp=as.numeric(DF$imp)
+ggplot(DF, aes(x=reorder(variables,imp), y=imp,fill=imp))+ 
+      geom_bar(stat="identity", position="dodge")+ coord_flip()+
+      ylab("Variable Importance")+
+      xlab("Variables")+
+      ggtitle("Variable Importance for Random Forest model")+
+      scale_fill_gradient(low="red", high="blue")+theme_minimal()
+```
+
+
+Random forest shows that Repayment status, Age and Amount of given credit are very important in predicting the default probablity. 
+
+## validation
+```{r}
+# not tuned
+rf2 <- ranger(Default ~., data = trainset[, c(2:24,26)],num.trees = 300,max.depth = 6,probability = TRUE,importance = 'impurity') 
+output <- do.call(rbind, Map(data.frame, ID=test$ID, default=predict(rf2,test[, 2:24])$predictions[,2]))
+write.csv(output,"default_validation.csv", row.names = FALSE)
+```
+
+## tunning hyperparameters 
+```{r warning=FALSE}
+#for best performance, the hyperparameters should be tuned
+default.task = makeClassifTask(data = trainset[, c(2:25)], target = "default")
+estimateTimeTuneRanger(default.task)
+res = tuneRanger(default.task, measure = list(multiclass.brier), num.trees = 600, 
+  num.threads = 2, iters = 70, save.file.path = NULL)
+```
+
+```{r}
+# tuned
+tuned_rf_predictions= predict(res$model, newdata=test[, 2:24])
+out_prob = do.call(rbind, Map(data.frame, ID=test$ID, default=tuned_rf_predictions$data$prob.Y))
+write.csv(out_prob,"tuned_default_validation.csv", row.names = FALSE)
+```
+
